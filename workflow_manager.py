@@ -79,7 +79,7 @@ def process_file(file_name):
     # Processing function where we pass a row from the df and update our axis
     # so in this case we will need to return the relative result
     # we're going to pull this in from main
-
+    print("Now working on processing a file!")
     df[["underdog_mean", "underdog_variance"]] = df.apply(process_row, axis=1, result_type='expand')
 
     # Save the processed file
