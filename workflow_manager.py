@@ -50,8 +50,11 @@ repo = Repo(REPO_DIR)
 if repo.bare:
     raise Exception("Not a valid Git repository")
 
-def update_git():
+def update_git(files):
     """Commit and push changes to Git"""
+    for src, dst in files:
+        repo.index.add([dst])
+        repo.index.remove([src])
     repo.index.commit(f"Moved {len(files)} files in batch.")
     origin = repo.remote(name="origin")
     origin.push()
@@ -60,10 +63,10 @@ def move_files_in_batch(files):
     """Move a batch of files from their source to their destination."""
     for src, dst in files:
         shutil.move(src, dst)
-        repo.index.add([dst])
-        repo.index.remove([src])
 
-    update_git()
+    update_git(files)
+
+
 
 def process_file(file_name):
     """Process a single file: move, process, and finalize."""
@@ -85,11 +88,10 @@ def process_file(file_name):
     # Save the processed file
     finished_path = os.path.join(FINISHED_FOLDER, file_name)
     df.to_csv(finished_path, index=False)
-    repo.index.add([finished_path])
-    repo.index.remove([file_path])
+    print(f"Processed {file_name} and saved to 'finished'.")
     os.remove(file_path)
+    return file_path, finished_path
 
-    print(f"Processed and moved {file_name} to 'finished'.")
 
 if __name__ == "__main__":
     while True:
@@ -98,7 +100,7 @@ if __name__ == "__main__":
         origin.pull()
 
         # Get the list of files in the 'not_started' folder (up to 1000 files)
-        files = os.listdir(NOT_STARTED_FOLDER)[:100]
+        files = os.listdir(NOT_STARTED_FOLDER)[:min(100, len(os.listdir(NOT_STARTED_FOLDER)))]
 
         if not files:
             print("No more files to process in 'not_started'. Exiting.")
@@ -114,8 +116,9 @@ if __name__ == "__main__":
         move_files_in_batch(batch_moves)
 
         # Use multiprocessing Pool to process files concurrently
-        num_cores = cpu_count()
+        num_cores = cpu_count()-4
         with Pool(num_cores) as pool:
-            pool.map(process_file, files)
+            files = pool.map(process_file, files)
 
-        update_git()
+        print("Trying to update git after getting through batch of 100 files.")
+        update_git(files)
