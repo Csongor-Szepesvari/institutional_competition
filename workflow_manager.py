@@ -32,6 +32,7 @@ import shutil
 import pandas as pd
 from git import Repo
 from multiprocessing import Pool, cpu_count
+from main import process_row
 
 # Define folders
 BASE_DIR = os.getcwd()
@@ -75,11 +76,11 @@ def process_file(file_name):
     # Read and process the file
     df = pd.read_csv(file_path)
 
-    # Example function logic (replace this with your actual function)
-    def example_function(row):
-        return len(str(row))  # Replace with your actual computation
+    # Processing function where we pass a row from the df and update our axis
+    # so in this case we will need to return the relative result
+    # we're going to pull this in from main
 
-    df["result"] = df.apply(example_function, axis=1)
+    df[["underdog_mean", "underdog_variance"]] = df.apply(process_row, axis=1, result_type='expand')
 
     # Save the processed file
     finished_path = os.path.join(FINISHED_FOLDER, file_name)
@@ -97,7 +98,7 @@ if __name__ == "__main__":
         origin.pull()
 
         # Get the list of files in the 'not_started' folder (up to 1000 files)
-        files = os.listdir(NOT_STARTED_FOLDER)[:1000]
+        files = os.listdir(NOT_STARTED_FOLDER)[:100]
 
         if not files:
             print("No more files to process in 'not_started'. Exiting.")

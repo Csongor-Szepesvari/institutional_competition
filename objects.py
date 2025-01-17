@@ -2,66 +2,182 @@
 This file contains all of our objects and functions we will use to go through to find equilibrium points for different games and then simulate their outcomes. 
 '''
 import numpy as np
+import time as t
+from scipy.stats import norm
+
+def calculate_replicates_for_top_k(
+    params,          # List of (dist_type, mu, sigma, sample_size) tuples
+    k,               # Number of top-k values to consider
+    dist_type,       # Whether we're calculating for normal or lognormal
+    confidence=0.95,      # Desired confidence level (e.g., 0.95 for 95% confidence)
+    error_rate=0.01,      # Allowed relative error (e.g., 0.01 for 1% error)
+    max_iters=50,    # Max iterations for convergence
+    tol=1e-3         # Tolerance for replicate change
+):
+    """
+    Calculate the number of replicates required for estimating the mean of the top-k
+    values from a fixed-size combined sample of distributions.
+
+    Parameters:
+        params (list of tuples): Each tuple (dist_type, mu, sigma, n) specifies:
+                                 - dist_type: 'normal' or 'lognormal'
+                                 - mu: mean of the distribution
+                                 - sigma: standard deviation of the distribution
+                                 - n: number of samples to draw from the distribution
+        k (int): Number of top-k values to estimate.
+        confidence (float): Desired confidence level (e.g., 0.95).
+        error_rate (float): Allowed relative error in the top-k mean estimate.
+        max_iters (int): Maximum number of iterations to converge.
+        tol (float): Tolerance for replicate count change between iterations.
+
+    Returns:
+        int: Estimated required number of replicates.
+    """
+    # Calculate z-score for the confidence level
+    z = norm.ppf(1 - (1 - confidence) / 2)
+    
+    # Initial guess for number of replicates
+    num_replicates = 100
+    previous_replicates = 0
+
+    # Total combined sample size from all distributions
+    combined_sample_size = sum(n for n, _, _ in params)
+    k = int(min(combined_sample_size, k))
+
+    for iteration in range(max_iters):
+        # Generate the combined sample based on specified sample sizes and distribution types
+        combined_data = []
+        for n, mu, sigma in params:
+            if dist_type == 'normal':
+                combined_data.extend(np.random.normal(mu, sigma, int(n)))
+            elif dist_type == 'log':
+                combined_data.extend(np.random.lognormal(mu, sigma, int(n)))
+            else:
+                raise ValueError(f"Unsupported distribution type: {dist_type}")
+        
+        combined_data = np.array(combined_data)
+        
+        # Extract top-k values
+        top_k_values = np.sort(combined_data)[-k:]
+        top_k_mean = np.mean(top_k_values)
+        top_k_std = np.std(top_k_values, ddof=1) if k>1 else np.std(top_k_values)
+        
+        # Estimate the required number of replicates
+        #print(z, top_k_std, error_rate, top_k_mean)
+        required_replicates = max(1,int(((z * top_k_std) / (error_rate * top_k_mean))**2))
+        #print(required_replicates)
+        # Convergence check
+        if abs(required_replicates - num_replicates) / num_replicates < tol:
+            return required_replicates
+        
+        # Update replicate count for the next iteration
+        previous_replicates = num_replicates
+        num_replicates = required_replicates
+
+    # If convergence is not achieved, return the last estimate
+    return num_replicates
 
 
+def transform_mu_sigma_to_log(mu, sigma):
+    sigma_log = np.log(sigma)/2
+    mu_log = np.log(mu)/2
+    return mu_log, sigma_log
+
+# COMPLETED
 def generate_samples_top_k(categories, log_or_normal, top_k=None):
     '''
     categories : tuple of tuples, ((number samples, mu, sigma), (number_samples, mu, sigma), ...)
+    categories : has shape (num categories, 3)
     '''
     outcomes = np.array([])
     for category in categories:
+        rng = np.random.default_rng()
         if log_or_normal == 'log':
-            outcomes = np.concatenate((outcomes, np.random.lognormal(category[1], category[2], category[0])))
+            outcomes = np.concatenate((outcomes, rng.lognormal(mean=category[1], sigma=category[2], size=int(category[0]))))
         elif log_or_normal == 'normal':
-            outcomes = np.concatenate((outcomes, np.random.normal(category[1], category[2], category[0])))
+            outcomes = np.concatenate((outcomes, rng.normal(loc=category[1], scale=category[2], size=int(category[0]))))
 
     if top_k is not None:
         outcomes = np.sort(outcomes)[::-1][:top_k]
     return outcomes
 
 # Now we will create a function that takes a memo and returns the expected value for a certain distribution.
-def eval_particular_distribution(categories, log_or_normal, memo=None, top_k=None):
-    if memo is None:
-        memo = {}
+
+def eval_particular_distribution(categories, log_or_normal, memo, top_k=None, verbose=False, confidence=0.95, error=0.05):
+    if verbose:
+        print("testing", (categories, log_or_normal, top_k))
+        print()
+
+    # CONVERT TOP_K TO BE AT MOST AS LARGE AS THE TOTAL SIZE OF SAMPLES
+    total_samples = sum([samples for samples, mu, sigma in categories])
+    if top_k:
+        top_k = int(min(top_k, total_samples))
+
     if (categories, log_or_normal, top_k) in memo:
+        if verbose:
+            print("Found in the memo already, time saved yay!")
+            print()
         return memo[(categories, log_or_normal, top_k)]
 
+    # Calculate the number of samples required to get within our confidence and error regions
+    num_runs_estimate = calculate_replicates_for_top_k(params=categories, k=top_k, dist_type=log_or_normal, error_rate=0.05)
+    if verbose:   
+        print("Estimate for the number of runs needed:", num_runs_estimate)
     if log_or_normal=='log':
-        num_runs = 50000
+        num_runs = max(1000,min(50000, num_runs_estimate))
     else:
-        num_runs = 5000
+        num_runs = max(100,min(5000, num_runs_estimate))
+
+
     total_outcome = np.array([])
+    start = t.time()
     for i in range(num_runs):
-        total_outcome = np.concatenate((total_outcome, np.array([np.mean(generate_samples_top_k(categories, log_or_normal, top_k=5))])))
+        total_outcome = np.concatenate((total_outcome, np.array([np.mean(generate_samples_top_k(categories, log_or_normal, top_k=top_k))])))
+        if verbose:
+            if ((i+1)/num_runs*100/20).is_integer():
+                print(f"{(i+1)/num_runs*100}% completed sampling one iteration.")
+    #if verbose:
+        #print(total_outcome)
     memo[(categories, log_or_normal, top_k)] = total_outcome.mean()
+    if verbose:
+        print(len(memo))
+        print(t.time()-start, "seconds to find the result of a 1 incrementation.")
+        print()
     return memo[(categories, log_or_normal, top_k)]
 
 def convert_category_strategy_to_evaluator(categories, strategy):
     # takes a categories and strategy as used normally and converts it into tuples to be used with the sampler
     n = len(categories)
-    new_categories = np.zeros((n,3),dtype=int)
-    print(new_categories)
-    for i, category in zip(range(n),categories):
-        new_categories[i][0] = strategy[category]
-        new_categories[i][1] = categories[category]["mean"]
-        new_categories[i][2] = categories[category]["std"]
+    new_categories = np.zeros((n,3))
+    #print(new_categories)
+    # categories in this case refers a dictionary of {"cat_name":category}
+    for i, category in zip(range(n),categories.values()):
+        new_categories[i][0] = int(strategy[category.get_name()])
+        new_categories[i][1] = category.get_mean()
+        new_categories[i][2] = category.get_std()
 
     new_categories = tuple(tuple(row) for row in new_categories)
     return new_categories
 
 
 class Category():
-    def __init__(self, name, mean, std, size):
+    def __init__(self, name, mean, std, size, log_or_normal):
+        
         self.mean = mean
         self.std = std
+        if log_or_normal == 'log':
+            self.mean, self.std = transform_mu_sigma_to_log(self.mean, self.std)
         self.size = size
         self.name = name
+        self.log_normal = log_or_normal
 
     def get_samples(self, n:int):
         if n > self.size:
             raise ValueError("Error: we can't sample more than there are elements in this category.")
         else:
             rng = np.random.default_rng()
+            if self.log_normal == 'log':
+                return rng.lognormal(mean=self.mean, sigma=self.std, size=n)
             return rng.normal(loc=self.mean, scale=self.std, size=n)
 
     def get_mean(self):
@@ -75,79 +191,6 @@ class Category():
 
     def get_name(self):
         return self.name
-
-class Game():
-    '''
-    Game class meant for creating specific instances of games, both to find equilibrium points and also to simulate those games
-    '''
-    def __init__(self, num_players:int, to_admit: int, players:list[Player], categories:dict[str:Category], game_mode_type:str, top_k=None, log_normal=False):
-        '''
-        Initializes a game object based on:
-
-            num_players->int : the number of players in a game
-            to_admit->int : the number of students each player is admitting
-            win_vals->list[float] : the associated "win value" with each player
-            categories->list[Category] : a list of the categories of the students
-            game_mode_type->str : the type of the game, either "top_k" or "expected"
-        '''
-
-        self.num_players = num_players
-        self.players = players
-        self.player_dict = {player.name:player for player in self.players}
-        self.to_admit = to_admit
-        self.categories = categories
-        self.category_keys = ["Q1", "Q2", "Q3", "Q4"]
-        self.blind_categories = self.generate_blind_cat()
-        self.game_mode_type = game_mode_type
-        self.top_k = top_k
-        self.log_normal = log_normal
-
-    def generate_blind_cat(self):
-        high = CombinedCategory(
-            name="high", mean1=self.categories["Q1"].get_mean(), mean2=self.categories["Q2"].get_mean(),
-            std1=self.categories["Q1"].get_std(), std2=self.categories["Q2"].get_std(),
-            size1=self.categories["Q1"].get_size(), size2=self.categories["Q2"].get_size()
-        )
-        low = CombinedCategory(
-            name="low", mean1=self.categories["Q3"].get_mean(), mean2=self.categories["Q4"].get_mean(),
-            std1=self.categories["Q3"].get_std(), std2=self.categories["Q4"].get_std(),
-            size1=self.categories["Q3"].get_size(), size2=self.categories["Q4"].get_size()
-        )
-        return {"high":high, "low":low}
-
-
-    def find_strategies_iterated_br(self):
-        '''
-        This method finds the stable strategies for each player based on iterated best response. If a stable profile is found it is a Nash Equilibrium
-
-        The method works by iterating through the list of players and asking each off them to best respond to the game object as it stands.
-        If after one iteration of going through all players, no players' strategies change, we have found a stable point and exit. The loop.
-
-        Has no inputs. But the resultant strategies are updated in the strategy dictionaries of the players contained in the list.
-        '''
-        last_strats = None
-
-        # while last strats aren't the same as the current updated list, loop (detects if there's no change from looping)
-
-        # NOTE: straight equality (==) CAN be used here, because python does an element-wise equality check of lists, which then does an equality check on the nested dictionaries, very cool!
-        looped = 0
-        while last_strats != self.get_strat_list():
-            # update last strats to the current strats before updating our strategies in the inner loop
-            last_strats = self.get_strat_list()
-            for player in self.players:
-                if player.level >= looped:
-                    player.best_response(self)
-                print(player.name, player.strategy)
-            looped += 1
-            print()
-        #print("Woohoo! Converged!")
-        #print()
-
-    def get_strat_list(self):
-        '''
-        This method loops through the player list and gets a list of their respective strategies
-        '''
-        return [player.strategy for player in self.players]
 
 class Player():
     def __init__(self, win_value:float, blind:bool, level:int, name:str):
@@ -163,7 +206,7 @@ class Player():
         self.blind = blind
         self.level = level
         self.name = name
-        self.memo = {}
+        
 
     def update_blind_strategy(self, strategy, game):
         '''
@@ -212,11 +255,12 @@ class Player():
         for category in game.categories.values():
             # this for loop grabs a category and then calculates what percentage of the category we will successfully absorb
             # we do this by subtracting the percentage we lose to other players
-            achieved_result_pct[category.get_name()] = strategy[category.get_name()] * (1 - self.calculate_percentage_lost_to_others(other_players, category.get_name()))
+            achieved_result_pct[category.get_name()] = strategy[category.get_name()] * (1 - self.calculate_pct_lost_to_others(other_players, category.get_name()))
         return achieved_result_pct
 
 
-    def calculate(self, other_players, category):
+    def calculate_pct_lost_to_others(self, other_players, category):
+        # THIS METHOD NEEDS TO BE REWORKED
         '''
         This method returns the percentage of a category lost to others regardless of our own strategic occupation.
         Parameters:
@@ -264,6 +308,11 @@ class Player():
         return f_val + t_val
 
     def greedy_top_k_br(self, game, feasible_strategy_numbers:dict[str:float], k:int, blind=False):
+        '''
+        for each possible category we create a new strategy of incrementing each one by one
+        then we check what the outcome of this combination is
+        then we pick the maximal one (greedy)
+        '''
         to_admit = game.to_admit
         # strategy of actual admittees
         new_strategy = {category.get_name():0 for category in game.categories.values()}
@@ -272,13 +321,14 @@ class Player():
                 max_val = float('-inf')
                 max_cat = ""
                 for category in game.categories.values():
+                    # we do the actual picking here
                     if 1 + new_strategy[category.get_name()] <= feasible_strategy_numbers[category.get_name()]:
                         name = category.get_name()
                         temp_strat = new_strategy.copy()
                         temp_strat[name] += 1
                         # this is where the difference needs to be made
-                        convert_category_strategy_to_evaluator(categories=game.categories, strategy=temp_strat)
-                        _val_strat = eval_particular_distribution(strategy_numbers=temp_strat, categories=game.categories, k=k, log_normal=game.log_normal)
+                        category_tuple = convert_category_strategy_to_evaluator(categories=game.categories, strategy=temp_strat)
+                        _val_strat = eval_particular_distribution(categories=category_tuple, top_k=k, log_or_normal=game.log_normal, memo=game.memo, verbose=game.verbose)
                         if _val_strat > max_val:
                             max_val = _val_strat
                             max_cat = name
@@ -339,6 +389,10 @@ class Player():
             if not self.blind:
                 new_strat = {category.get_name():0 for category in game.categories.values()}
                 # follow the simple logic of increasing admittances to Q1 > Q2 > Q3 > Q4 etc
+
+                    # !!! this logic is broken in case we're looking at log_normal distributions since the expectation is different
+                    # We need to scale it so that the mean we supply results in the *desired mean*
+                    # Lognormal distributions have an expectation = e ** (mu + sigma^2 / 2)
                 for cat_name in ["Q1", "Q2", "Q3", "Q4"]:
                     if feasible_strategy_numbers[cat_name] <= max_admit:
                         # maxing out the category, so we just admit everyone
@@ -420,13 +474,75 @@ class Candidate():
         for i in range(len(cumulative_probs)):
             if random_value < cumulative_probs[i]:
                 return self.competitors[i]
-            
-def simulate_game(players:dict[str:Player], categories:dict[str:Category], to_admit:int, game_mode:str, top_k:int):
+
+class Game():
+    '''
+    Game class meant for creating specific instances of games, both to find equilibrium points and also to simulate those games
+    '''
+    def __init__(self, num_players:int, to_admit: int, players:list[Player], categories:dict[str:Category], game_mode_type:str, top_k=None, log_normal=False, verbose=False):
+        '''
+        Initializes a game object based on:
+
+            num_players->int : the number of players in a game
+            to_admit->int : the number of students each player is admitting
+            win_vals->list[float] : the associated "win value" with each player
+            categories->list[Category] : a list of the categories of the students
+            game_mode_type->str : the type of the game, either "top_k" or "expected"
+        '''
+
+        self.num_players = num_players
+        self.players = players
+        self.player_dict = {player.name:player for player in self.players}
+        self.to_admit = to_admit
+        self.categories = categories
+        self.category_keys = ["Q1", "Q2", "Q3", "Q4"]
+        #self.blind_categories = self.generate_blind_cat() DEPRECATED
+        self.game_mode_type = game_mode_type
+        self.top_k = top_k
+        self.log_normal = log_normal
+        self.verbose = verbose
+        self.memo = {}
+
+    def find_strategies_iterated_br(self):
+        '''
+        This method finds the stable strategies for each player based on iterated best response. If a stable profile is found it is a Nash Equilibrium
+
+        The method works by iterating through the list of players and asking each off them to best respond to the game object as it stands.
+        If after one iteration of going through all players, no players' strategies change, we have found a stable point and exit. The loop.
+
+        Has no inputs. But the resultant strategies are updated in the strategy dictionaries of the players contained in the list.
+        '''
+        last_strats = None
+
+        # while last strats aren't the same as the current updated list, loop (detects if there's no change from looping)
+
+        # NOTE: straight equality (==) CAN be used here, because python does an element-wise equality check of lists, which then does an equality check on the nested dictionaries, very cool!
+        looped = 0
+        while last_strats != self.get_strat_list():
+            # update last strats to the current strats before updating our strategies in the inner loop
+            last_strats = self.get_strat_list()
+            for player in self.players:
+                if player.level >= looped:
+                    player.best_response(self)
+                #print(player.name, player.strategy)
+            looped += 1
+            #print()
+        #print("Woohoo! Converged!")
+        #print()
+
+    def get_strat_list(self):
+        '''
+        This method loops through the player list and gets a list of their respective strategies
+        '''
+        return [player.strategy for player in self.players]
+                
+def simulate_game(players:dict[str:Player], categories:dict[str:Category], to_admit:int, game_mode:str, top_k:int, log_normal:str, verbose=False):
     '''
     This method simulates a game as it would actually play out based on the players' strategies.
 
     It steps through each category, generates random sets of admittees for each player based on their strategies, resolves collisions and gets actual attendants
     '''
+    
 
     attendees = {player.name:[] for player in players.values()}
     for category in categories.values():
@@ -440,14 +556,15 @@ def simulate_game(players:dict[str:Player], categories:dict[str:Category], to_ad
 
         admittees = {player.name:set() for player in players.values()}
 
-
+        # SIMULATE TRUE PLAYER SELECTION
         for player in players.values():
             # we want to highlight a selection of candidates, for each player we want to give 0 or 1 for each candidate
             gen = np.random.Generator(np.random.PCG64())
             # grab the number of Candidates the Player will try to secure in this category
             strat = player.strategy[category.get_name()]*category.get_size()
-
-            #print("strategy in", category.get_name(), "is to pull in", strat, "candidates")
+            
+            if verbose:
+                print("strategy in", category.get_name(), "is to pull in", strat, "candidates")
 
             # confirm that the number of players to pull in is an integer
             if type(strat)==float:
@@ -459,7 +576,8 @@ def simulate_game(players:dict[str:Player], categories:dict[str:Category], to_ad
             admittees[player.name] = set(gen.choice(a=category.get_size(), size=strat, replace=False))
 
             # print out the selection
-            #print("Player", player.name, "selection in category", category.name, "is:", admittees[player.name])
+            if verbose:
+                print("Player", player.name, "selection in category", category.name, "is:", admittees[player.name])
 
 
 
@@ -472,6 +590,7 @@ def simulate_game(players:dict[str:Player], categories:dict[str:Category], to_ad
             attendees[winning_name].append(candidate.value)
         Then simulate the chance breakdown and add the candidate value to the winning players attendees
         '''
+        #print(candidates)
         for i in range(len(candidates)):
             candidate = candidates[i]
             for player in players.values():
@@ -479,10 +598,14 @@ def simulate_game(players:dict[str:Player], categories:dict[str:Category], to_ad
                     candidate.add_competitor(player)
             if candidate.competitors != []:
                 winning_player = candidate.simulate_winner()
+                if verbose:
+                    print(f"Candidate value is {candidate.value}")
                 attendees[winning_player.name].append(candidate.value)
-                #print("Added attendee to", winning_player.name)
-                #print(winning_player.name, "number of attendees is", len(attendees[winning_player.name]))
-        #print()
+                if verbose:
+                    print(f"Added {i}th attendee to", winning_player.name)
+                    print(winning_player.name, "number of attendees is", len(attendees[winning_player.name]))
+        if verbose:
+            print()
 
     '''Calculate the utilities for the game and return it'''
     return get_game_utility(players=players, attendees=attendees, to_admit=to_admit, game_type=game_mode, top_k=top_k)
@@ -519,7 +642,7 @@ def get_game_utility(players:dict[str:Player], attendees:dict[str:float], to_adm
 
 
 
-def categories_generator(high_low_ratio_mean, high_low_ratio_variance, mean_variance_ratio, high_mean_probability, high_variance_probability):
+def categories_generator(high_low_ratio_mean, high_low_ratio_variance, mean_variance_ratio, high_mean_probability, high_variance_probability, log_normal):
     '''
     This function generates categories based on the parameters provided. The parameters are as follows:
     high_low_ratio_mean: The ratio of the means of *conventionally* high talented students and conventionally low talented students.
@@ -529,13 +652,13 @@ def categories_generator(high_low_ratio_mean, high_low_ratio_variance, mean_vari
     high_variance_probability: The probability that a student is *unconventionally* high talented.
     '''
     categories = {}
-    default_mean = 10
+    default_mean = 5
     epsilon = 1/100
     default_population = 120
-    categories["Q1"] = Category(name="Q1", mean=default_mean+epsilon, std=default_mean/mean_variance_ratio, size=int(default_population*high_mean_probability*high_variance_probability))
-    categories["Q2"] = Category(name="Q2", mean=default_mean, std=default_mean/(mean_variance_ratio*high_low_ratio_variance), size=int(default_population*high_mean_probability*(1-high_variance_probability)))
-    categories["Q3"] = Category(name="Q3", mean=default_mean*high_low_ratio_mean+epsilon, std=default_mean/mean_variance_ratio, size=int(default_population*(1-high_mean_probability)*high_variance_probability))
-    categories["Q4"] = Category(name="Q4", mean=default_mean*high_low_ratio_mean, std=default_mean/(mean_variance_ratio*high_low_ratio_variance), size=int(default_population*(1-high_mean_probability)*(1-high_variance_probability)))
+    categories["Q1"] = Category(name="Q1", mean=default_mean*high_low_ratio_mean+epsilon, std=default_mean*mean_variance_ratio*high_low_ratio_variance, size=int(default_population*high_mean_probability*high_variance_probability), log_or_normal=log_normal)
+    categories["Q2"] = Category(name="Q2", mean=default_mean*high_low_ratio_mean, std=default_mean*mean_variance_ratio, size=int(default_population*high_mean_probability*(1-high_variance_probability)), log_or_normal=log_normal)
+    categories["Q3"] = Category(name="Q3", mean=default_mean+epsilon, std=default_mean*mean_variance_ratio*high_low_ratio_variance, size=int(default_population*(1-high_mean_probability)*high_variance_probability), log_or_normal=log_normal)
+    categories["Q4"] = Category(name="Q4", mean=default_mean, std=default_mean*mean_variance_ratio, size=int(default_population*(1-high_mean_probability)*(1-high_variance_probability)), log_or_normal=log_normal)
 
     return categories
 
