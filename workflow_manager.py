@@ -57,6 +57,7 @@ def update_git(files):
         repo.index.remove([src])
     repo.index.commit(f"Moved {len(files)} files in batch.")
     origin = repo.remote(name="origin")
+    origin.pull()
     origin.push()
 
 def move_files_in_batch(files):
