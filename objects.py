@@ -561,7 +561,7 @@ def simulate_game(players:dict[str:Player], categories:dict[str:Category], to_ad
             # we want to highlight a selection of candidates, for each player we want to give 0 or 1 for each candidate
             gen = np.random.Generator(np.random.PCG64())
             # grab the number of Candidates the Player will try to secure in this category
-            strat = player.strategy[category.get_name()]*category.get_size()
+            strat = int(np.round(player.strategy[category.get_name()]*category.get_size(), decimals=0))
             
             if verbose:
                 print("strategy in", category.get_name(), "is to pull in", strat, "candidates")
