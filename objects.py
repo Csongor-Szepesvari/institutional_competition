@@ -322,7 +322,7 @@ class Player():
                 max_cat = ""
                 for category in game.categories.values():
                     # we do the actual picking here
-                    if 1 + new_strategy[category.get_name()] <= feasible_strategy_numbers[category.get_name()]:
+                    if 1 + new_strategy[category.name] <= feasible_strategy_numbers[category.name]:
                         name = category.get_name()
                         temp_strat = new_strategy.copy()
                         temp_strat[name] += 1

@@ -33,6 +33,7 @@ import pandas as pd
 from git import Repo
 from multiprocessing import Pool, cpu_count
 from main import process_row
+import datetime
 
 # Define folders
 BASE_DIR = os.getcwd()
@@ -117,7 +118,9 @@ if __name__ == "__main__":
         move_files_in_batch(batch_moves)
 
         # Use multiprocessing Pool to process files concurrently
-        num_cores = cpu_count()-4
+        num_cores = cpu_count()-2
+        now = datetime.datetime.now()
+        print(now.time())
         with Pool(num_cores) as pool:
             files = pool.map(process_file, files)
 
